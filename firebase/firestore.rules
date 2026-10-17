@@ -1,0 +1,89 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function validCode(code) {
+      return code is string && code.matches('^[A-F0-9]{32}$');
+    }
+
+    function assigned(backpackId) {
+      return signedIn()
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.backpackId == backpackId;
+    }
+
+    function assignedAfter(backpackId) {
+      return getAfter(/databases/$(database)/documents/users/$(request.auth.uid)).data.backpackId == backpackId;
+    }
+
+    function validBackpack(data) {
+      return data.keys().hasAll(['createdAt'])
+        && data.keys().hasOnly(['createdAt'])
+        && data.createdAt is timestamp;
+    }
+
+    function validDate(value) {
+      // Gregorian calendar, including February and century leap-year rules.
+      return value is string && (
+        value.matches('^[0-9]{4}-((0[13578]|1[02])-(0[1-9]|[12][0-9]|3[01])|(0[469]|11)-(0[1-9]|[12][0-9]|30)|02-(0[1-9]|1[0-9]|2[0-8]))$')
+        || value.matches('^([0-9]{2}(0[48]|[2468][048]|[13579][26])|([02468][048]|[13579][26])00)-02-29$')
+      );
+    }
+
+    function validProduct(data, productId) {
+      return data.keys().hasAll(['id', 'name', 'category', 'expiryDate', 'expiryDates', 'quantity', 'photoBase64'])
+        && data.keys().hasOnly(['id', 'name', 'category', 'expiryDate', 'expiryDates', 'quantity', 'photoBase64'])
+        && data.id is string
+        && data.id == productId
+        && data.id.size() > 0 && data.id.size() <= 128
+        && data.name is string
+        && data.name.size() > 0 && data.name.size() <= 120
+        && data.name.matches('.*[^\\s].*')
+        && data.category in ['FOOD', 'MEDICINE', 'EMERGENCY']
+        && (data.expiryDate == null || validDate(data.expiryDate))
+        && data.quantity is int && data.quantity >= 1 && data.quantity <= 999
+        && data.expiryDates is list && data.expiryDates.size() <= data.quantity
+        && ((data.expiryDates.size() == 0 && data.expiryDate == null)
+          || (data.expiryDates.size() > 0 && validDate(data.expiryDates[0])
+            && data.expiryDate == data.expiryDates[0]))
+        && (data.photoBase64 == null || (data.photoBase64 is string
+          && data.photoBase64.size() <= 350000));
+    }
+
+    match /users/{uid} {
+      allow get: if signedIn() && request.auth.uid == uid;
+      allow list, delete: if false;
+      allow create, update: if signedIn() && request.auth.uid == uid
+        && request.resource.data.keys().hasAll(['backpackId'])
+        && request.resource.data.keys().hasOnly(['backpackId'])
+        && validCode(request.resource.data.backpackId)
+        && (!exists(/databases/$(database)/documents/users/$(uid))
+          || resource.data.backpackId == request.resource.data.backpackId)
+        && existsAfter(/databases/$(database)/documents/backpacks/$(request.resource.data.backpackId));
+    }
+
+    match /backpacks/{backpackId} {
+      // The random 128-bit code is the private invitation/recovery capability.
+      // Listing is always denied, so a client must already know the exact code.
+      allow get: if signedIn() && validCode(backpackId);
+      allow list, delete: if false;
+      allow create: if signedIn() && validCode(backpackId)
+        && validBackpack(request.resource.data)
+        && request.resource.data.createdAt == request.time
+        && assignedAfter(backpackId);
+      allow update: if false;
+
+      match /products/{productId} {
+        allow read, delete: if assigned(backpackId);
+        allow create, update: if assigned(backpackId)
+          && validProduct(request.resource.data, productId);
+      }
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -1,0 +1,4 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Required only by instrumentation tests using local Firebase emulators. -->
+    <application android:usesCleartextTraffic="true" />
+</manifest>
